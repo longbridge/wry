@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use objc2::{define_class, msg_send, rc::Retained, runtime::NSObject, MainThreadOnly};
+use objc2::{MainThreadOnly, define_class, msg_send, rc::Retained, runtime::NSObject};
 use objc2_foundation::{MainThreadMarker, NSObjectProtocol};
 use objc2_web_kit::{
   WKDownload, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
@@ -17,14 +17,14 @@ use crate::wkwebview::ios::WKWebView::WKWebView;
 use objc2_web_kit::WKWebView;
 
 use crate::{
-  url_from_webview,
+  PageLoadEvent, WryWebView, url_from_webview,
   wkwebview::{
     download::{navigation_download_action, navigation_download_response},
     navigation::{
       did_commit_navigation, did_finish_navigation, navigation_policy, navigation_policy_response,
+      web_content_process_did_terminate,
     },
   },
-  PageLoadEvent, WryWebView,
 };
 
 use super::wry_download_delegate::WryDownloadDelegate;
@@ -35,11 +35,11 @@ pub struct WryNavigationDelegateIvars {
   pub navigation_policy_function: Box<dyn Fn(String) -> bool>,
   pub download_delegate: Option<Retained<WryDownloadDelegate>>,
   pub on_page_load_handler: Option<Box<dyn Fn(PageLoadEvent)>>,
+  pub on_web_content_process_terminate_handler: Option<Box<dyn Fn()>>,
 }
 
 define_class!(
   #[unsafe(super(NSObject))]
-  #[name = "WryNavigationDelegate"]
   #[thread_kind = MainThreadOnly]
   #[ivars = WryNavigationDelegateIvars]
   pub struct WryNavigationDelegate;
@@ -96,6 +96,11 @@ define_class!(
     ) {
       navigation_download_response(self, webview, response, download);
     }
+
+    #[unsafe(method(webViewWebContentProcessDidTerminate:))]
+    fn web_content_process_did_terminate(&self, webview: &WKWebView) {
+      web_content_process_did_terminate(self, webview);
+    }
   }
 );
 
@@ -108,12 +113,13 @@ impl WryNavigationDelegate {
     navigation_handler: Option<Box<dyn Fn(String) -> bool>>,
     download_delegate: Option<Retained<WryDownloadDelegate>>,
     on_page_load_handler: Option<Box<dyn Fn(PageLoadEvent, String)>>,
+    on_web_content_process_terminate_handler: Option<Box<dyn Fn()>>,
     mtm: MainThreadMarker,
   ) -> Retained<Self> {
     let navigation_policy_function = Box::new(move |url: String| -> bool {
       navigation_handler
         .as_ref()
-        .map_or(true, |navigation_handler| (navigation_handler)(url))
+        .is_none_or(|navigation_handler| (navigation_handler)(url))
     });
 
     let on_page_load_handler = if let Some(handler) = on_page_load_handler {
@@ -125,6 +131,16 @@ impl WryNavigationDelegate {
       None
     };
 
+    let on_web_content_process_terminate_handler =
+      if let Some(handler) = on_web_content_process_terminate_handler {
+        let custom_handler = Box::new(move || {
+          handler();
+        }) as Box<dyn Fn()>;
+        Some(custom_handler)
+      } else {
+        None
+      };
+
     let delegate = mtm
       .alloc::<WryNavigationDelegate>()
       .set_ivars(WryNavigationDelegateIvars {
@@ -133,6 +149,7 @@ impl WryNavigationDelegate {
         has_download_handler,
         download_delegate,
         on_page_load_handler,
+        on_web_content_process_terminate_handler,
       });
 
     unsafe { msg_send![super(delegate), init] }

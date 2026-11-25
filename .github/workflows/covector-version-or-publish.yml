@@ -5,6 +5,12 @@ on:
     branches:
       - dev
 
+permissions:
+  # required to create the GitHub Release
+  contents: write
+  # required for creating the Version Packages Release
+  pull-requests: write
+
 jobs:
   version-or-publish:
     runs-on: ubuntu-latest
@@ -52,7 +58,7 @@ jobs:
 
       - name: Create Pull Request With Versions Bumped
         id: cpr
-        uses: peter-evans/create-pull-request@dd2324fc52d5d43c699a5636bcf19fceaa70c284 # 7.0.7
+        uses: peter-evans/create-pull-request@v8.1.1
         if: steps.covector.outputs.commandRan == 'version'
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

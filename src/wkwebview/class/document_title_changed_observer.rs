@@ -5,14 +5,13 @@
 use std::{ffi::c_void, ptr::null_mut};
 
 use objc2::{
-  define_class, msg_send,
+  AllocAnyThread, DefinedClass, define_class, msg_send,
   rc::Retained,
   runtime::{AnyObject, NSObject},
-  AllocAnyThread, DefinedClass,
 };
 use objc2_foundation::{
   NSDictionary, NSKeyValueChangeKey, NSKeyValueObservingOptions,
-  NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString,
+  NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString, ns_string,
 };
 
 use crate::WryWebView;
@@ -23,7 +22,6 @@ pub struct DocumentTitleChangedObserverIvars {
 
 define_class!(
   #[unsafe(super(NSObject))]
-  #[name = "DocumentTitleChangedObserver"]
   #[ivars = DocumentTitleChangedObserverIvars]
   pub struct DocumentTitleChangedObserver;
 
@@ -38,8 +36,8 @@ define_class!(
       _context: *mut c_void,
     ) {
       if let (Some(key_path), Some(object)) = (key_path, of_object) {
-        if key_path.to_string() == "title" {
-          unsafe {
+        unsafe {
+          if key_path.isEqualToString(ns_string!("title")) {
             let handler = &self.ivars().handler;
             // if !handler.is_null() {
             let title: *const NSString = msg_send![object, title];
@@ -69,7 +67,7 @@ impl DocumentTitleChangedObserver {
         .object
         .addObserver_forKeyPath_options_context(
           &observer,
-          &NSString::from_str("title"),
+          ns_string!("title"),
           NSKeyValueObservingOptions::New,
           null_mut(),
         );
@@ -85,7 +83,7 @@ impl Drop for DocumentTitleChangedObserver {
       self
         .ivars()
         .object
-        .removeObserver_forKeyPath(self, &NSString::from_str("title"));
+        .removeObserver_forKeyPath(self, ns_string!("title"));
     }
   }
 }

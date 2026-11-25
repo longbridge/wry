@@ -25,7 +25,7 @@ use class::{
   wry_download_delegate::WryDownloadDelegate,
   wry_navigation_delegate::WryNavigationDelegate,
   wry_web_view::WryWebViewIvars,
-  wry_web_view_delegate::{WryWebViewDelegate, IPC_MESSAGE_HANDLER_NAME},
+  wry_web_view_delegate::{IPC_MESSAGE_HANDLER_NAME, WryWebViewDelegate},
   wry_web_view_ui_delegate::WryWebViewUIDelegate,
 };
 
@@ -33,9 +33,9 @@ use dpi::{LogicalPosition, LogicalSize};
 #[cfg(target_os = "macos")]
 use objc2::runtime::Bool;
 use objc2::{
+  AllocAnyThread, DeclaredClass, MainThreadOnly, Message,
   rc::Retained,
   runtime::{AnyObject, NSObject, ProtocolObject},
-  AllocAnyThread, DeclaredClass, MainThreadOnly, Message,
 };
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSTitlebarSeparatorStyle, NSView};
@@ -43,12 +43,12 @@ use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSTitlebarSeparato
 use objc2_core_foundation::CGSize;
 use objc2_core_foundation::{CGPoint, CGRect};
 use objc2_foundation::{
-  ns_string, MainThreadMarker, NSArray, NSBundle, NSDate, NSError, NSHTTPCookie,
-  NSHTTPCookieDomain, NSHTTPCookieExpires, NSHTTPCookieMaximumAge, NSHTTPCookieName,
-  NSHTTPCookiePath, NSHTTPCookiePropertyKey, NSHTTPCookieSameSiteLax, NSHTTPCookieSameSitePolicy,
-  NSHTTPCookieSameSiteStrict, NSHTTPCookieSecure, NSHTTPCookieValue, NSHTTPCookieVersion,
+  MainThreadMarker, NSArray, NSBundle, NSDate, NSError, NSHTTPCookie, NSHTTPCookieDomain,
+  NSHTTPCookieExpires, NSHTTPCookieMaximumAge, NSHTTPCookieName, NSHTTPCookiePath,
+  NSHTTPCookiePropertyKey, NSHTTPCookieSecure, NSHTTPCookieValue, NSHTTPCookieVersion,
   NSJSONSerialization, NSMutableDictionary, NSMutableURLRequest, NSNumber,
-  NSObjectNSKeyValueCoding, NSObjectProtocol, NSString, NSUTF8StringEncoding, NSURL, NSUUID,
+  NSObjectNSKeyValueCoding, NSObjectProtocol, NSString, NSURL, NSUTF8StringEncoding, NSUUID,
+  ns_string,
 };
 #[cfg(target_os = "ios")]
 use objc2_ui_kit::{UIScrollView, UIViewAutoresizing};
@@ -57,7 +57,6 @@ use objc2_ui_kit::{UIScrollView, UIViewAutoresizing};
 use objc2_app_kit::NSWindow;
 #[cfg(target_os = "ios")]
 use objc2_ui_kit::UIView as NSView;
-use once_cell::sync::Lazy;
 // #[cfg(target_os = "ios")]
 // use objc2_ui_kit::UIWindow as NSWindow;
 
@@ -85,7 +84,7 @@ use std::{
   ptr::NonNull,
   rc::Rc,
   str::{self, FromStr},
-  sync::{Arc, Mutex, RwLock},
+  sync::{Arc, LazyLock, Mutex, RwLock},
   time::Duration,
 };
 
@@ -98,7 +97,7 @@ use crate::{
 };
 
 use crate::{
-  BackgroundThrottlingPolicy, Error, Rect, RequestAsyncResponder, Result, WebViewAttributes, RGBA,
+  BackgroundThrottlingPolicy, Error, RGBA, Rect, RequestAsyncResponder, Result, WebViewAttributes,
 };
 
 use http::Request;
@@ -107,10 +106,53 @@ use crate::util::Counter;
 
 static COUNTER: Counter = Counter::new();
 
-static WEBVIEW_STATE: Lazy<RwLock<HashMap<String, WebViewState>>> = Lazy::new(Default::default);
+static WEBVIEW_STATE: LazyLock<RwLock<HashMap<String, WebViewState>>> =
+  LazyLock::new(Default::default);
+
+thread_local! {
+  /// A manual reference count of the live webviews using each `WKUserContentController`, keyed by
+  /// the controller's address.
+  ///
+  /// `InnerWebView::new` increments it and `InnerWebView::drop` decrements it, removing the entry
+  /// at zero. A webview built on its opener's configuration (`NewWindowResponse::Create`) shares
+  /// the opener's controller. When the count is already above zero, the new webview skips its init
+  /// scripts and `ipc` handler: the opener's already serve the controller, and removing the
+  /// handler on drop would remove the opener's.
+  static CONTROLLER_REF_COUNT: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
+}
+
+/// Increments `controller`'s reference count, returning whether another live webview already uses it.
+fn retain_controller(controller: &WKUserContentController) -> bool {
+  CONTROLLER_REF_COUNT.with(|counts| {
+    let mut counts = counts.borrow_mut();
+    let count = counts.entry(controller as *const _ as usize).or_default();
+    *count += 1;
+    *count > 1
+  })
+}
+
+/// Decrements `controller`'s reference count, returning if this is the last webview using it.
+fn release_controller(controller: &WKUserContentController) -> bool {
+  CONTROLLER_REF_COUNT.with(|counts| {
+    let mut counts = counts.borrow_mut();
+    let key = controller as *const _ as usize;
+    if let Some(count) = counts.get_mut(&key) {
+      *count -= 1;
+      if *count == 0 {
+        counts.remove(&key);
+        true
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  })
+}
 
 struct WebViewState {
-  pub protocol_ptrs: Vec<Rc<dyn Fn(crate::WebViewId, Request<Vec<u8>>, RequestAsyncResponder)>>,
+  pub protocol_ptrs:
+    Vec<Rc<dyn Fn(crate::WebViewId, Request<Vec<u8>>, RequestAsyncResponder) + Send + Sync>>,
 }
 
 unsafe impl Send for WebViewState {}
@@ -176,14 +218,6 @@ impl InnerWebView {
     unsafe { Self::new_ns_view(&*(ns_view as *mut NSView), attributes, pl_attrs, false) }
   }
 
-  pub async fn new_async(
-    window: &impl HasWindowHandle,
-    attributes: WebViewAttributes<'_>,
-    pl_attrs: super::PlatformSpecificWebViewAttributes,
-  ) -> Result<Self> {
-    Self::new(window, attributes, pl_attrs)
-  }
-
   pub fn new_as_child(
     window: &impl HasWindowHandle,
     attributes: WebViewAttributes,
@@ -198,14 +232,6 @@ impl InnerWebView {
     };
 
     unsafe { Self::new_ns_view(&*(ns_view as *mut NSView), attributes, pl_attrs, true) }
-  }
-
-  pub async fn new_as_child_async(
-    window: &impl HasWindowHandle,
-    attributes: WebViewAttributes<'_>,
-    pl_attrs: super::PlatformSpecificWebViewAttributes,
-  ) -> Result<Self> {
-    Self::new_as_child(window, attributes, pl_attrs)
   }
 
   fn new_ns_view(
@@ -253,9 +279,10 @@ impl InnerWebView {
           // if data_store_identifier is given and custom data stores are available, use custom store
           (false, true, Some(data_store)) => {
             let identifier = NSUUID::from_bytes(data_store);
+            // <https://developer.apple.com/documentation/webkit/wkwebsitedatastore/init(foridentifier:)>
+            // Available: macOS 14+, iOS 17+
             WKWebsiteDataStore::dataStoreForIdentifier(&identifier, mtm)
           }
-          // default data store
           _ => WKWebsiteDataStore::defaultDataStore(mtm),
         };
         config.setWebsiteDataStore(&data_store);
@@ -265,6 +292,8 @@ impl InnerWebView {
       // Register Custom Protocols
       let mut protocol_ptrs = Vec::new();
       for (name, function) in attributes.custom_protocols {
+        // <https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/urlschemehandler(forurlscheme:)>
+        // Available: macOS 10.13+, iOS 11+
         let already_registered = using_existing_config
           && config
             .urlSchemeHandlerForURLScheme(&NSString::from_str(&name))
@@ -293,6 +322,8 @@ impl InnerWebView {
         *ivar_delegate = CString::new(webview_id.as_bytes()).unwrap().into_raw();
 
         let set_result = objc2::exception::catch(AssertUnwindSafe(|| {
+          // <https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/seturlschemehandler(_:forurlscheme:)>
+          // Available: macOS 10.13+, iOS 11+
           config.setURLSchemeHandler_forURLScheme(
             Some(&*(handler.cast::<ProtocolObject<dyn WKURLSchemeHandler>>())),
             &NSString::from_str(&name),
@@ -329,6 +360,8 @@ impl InnerWebView {
 
       #[cfg(target_os = "ios")]
       {
+        // <https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/limitsnavigationstoappbounddomains>
+        // Available: macOS 11+, iOS 14+
         if pl_attrs.limit_navigations_to_app_bound_domains && operating_system_version().0 >= 14 {
           config.setLimitsNavigationsToAppBoundDomains(true);
         }
@@ -350,13 +383,19 @@ impl InnerWebView {
         data_store.setValue_forKey(Some(&proxies), ns_string!("proxyConfigurations"));
       }
 
+      // NOTE: Private API on macOS — `allowsPictureInPictureMediaPlayback` is a private KVC key on WKPreferences.
+      // On iOS it's public <https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/allowspictureinpicturemediaplayback>
       _preference.setValue_forKey(
         Some(&_yes),
         ns_string!("allowsPictureInPictureMediaPlayback"),
       );
 
       if attributes.javascript_disabled {
+        // <https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/defaultwebpagepreferences>
+        // Available: macOS 10.15+, iOS 13+
         let web_page_preferences = config.defaultWebpagePreferences();
+        // <https://developer.apple.com/documentation/webkit/wkwebpagepreferences/allowscontentjavascript>
+        // Available: macOS 10.15+, iOS 13+
         web_page_preferences.setAllowsContentJavaScript(false);
       }
 
@@ -364,19 +403,31 @@ impl InnerWebView {
       config.setValue_forKey(Some(&_yes), ns_string!("allowsInlineMediaPlayback"));
 
       if attributes.autoplay {
+        // <https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/mediatypesrequiringuseractionforplayback>
+        // Available: macOS 10.12+, iOS 10+
         config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::None);
       }
 
-      #[cfg(feature = "transparent")]
-      if attributes.transparent {
+      let version = util::operating_system_version();
+
+      if attributes.transparent || attributes.background_color.is_some() {
         let no = NSNumber::numberWithBool(false);
-        // Equivalent Obj-C:
+        // TODO: Check if this property exists or is used on iOS
         config.setValue_forKey(Some(&no), ns_string!("drawsBackground"));
       }
 
-      #[cfg(feature = "fullscreen")]
-      // Equivalent Obj-C:
-      _preference.setValue_forKey(Some(&_yes), ns_string!("fullScreenEnabled"));
+      if (cfg!(target_os = "macos") && (version.0 > 12 || (version.0 == 12 && version.1 >= 3)))
+        || (cfg!(target_os = "ios") && (version.0 > 15 || (version.0 == 15 && version.1 >= 4)))
+      {
+        // NOTE: Public API alternative for private config fullScreenEnabled (see below)
+        // Only available on macOS 12.3+ and iOS 15.4+
+        _preference.setElementFullscreenEnabled(true);
+      } else {
+        // NOTE: Private API — `fullScreenEnabled` is a private KVC key on WKPreferences.
+        // This is the private API alternative to setElementFullscreenEnabled above that also works on older macOS/iOS versions.
+        // TODO: Remove this for Tauri v3?
+        _preference.setValue_forKey(Some(&_yes), ns_string!("fullScreenEnabled"));
+      }
 
       #[cfg(target_os = "macos")]
       let webview = {
@@ -415,6 +466,24 @@ impl InnerWebView {
         };
         let webview: Retained<WryWebView> =
           objc2::msg_send![super(webview), initWithFrame: frame, configuration: &**config];
+
+        // Set the under-page background color for overscroll areas (public API, macOS 12+).
+        // drawsBackground is already disabled on the config above, so the window background
+        // shows through. This handles the color visible when scrolling past page bounds.
+        if os_major_version >= 12 {
+          if let Some((red, green, blue, alpha)) = attributes.background_color {
+            let color = objc2_app_kit::NSColor::colorWithSRGBRed_green_blue_alpha(
+              red as f64 / 255.0,
+              green as f64 / 255.0,
+              blue as f64 / 255.0,
+              alpha as f64 / 255.0,
+            );
+            // <https://developer.apple.com/documentation/webkit/wkwebview/underpagebackgroundcolor>
+            // Available: macOS 12+, iOS 15+
+            webview.setUnderPageBackgroundColor(Some(&color));
+          }
+        }
+
         webview
       };
       #[cfg(target_os = "ios")]
@@ -422,24 +491,24 @@ impl InnerWebView {
         let frame = ns_view.frame();
         let webview: Retained<WryWebView> =
           objc2::msg_send![super(webview), initWithFrame: frame, configuration: &**config];
-        if let Some((red, green, blue, alpha)) = attributes.background_color {
-          // This is required first since the webview color is applied too late.
-          webview.setOpaque(false);
-
-          let color = objc2_ui_kit::UIColor::colorWithRed_green_blue_alpha(
+        // Without a background color the webview stays opaque and white, flashing before the
+        // page paints, so fall back to the system background to follow the current appearance.
+        let color = if let Some((red, green, blue, alpha)) = attributes.background_color {
+          objc2_ui_kit::UIColor::colorWithRed_green_blue_alpha(
             red as f64 / 255.0,
             green as f64 / 255.0,
             blue as f64 / 255.0,
             alpha as f64 / 255.0,
-          );
-
-          if !is_child {
-            ns_view.setBackgroundColor(Some(&color));
-          }
-          // This has to be monitored as it may clash with isOpaque = true.
-          // The webview background color may also applied too late so actually not that useful.
-          webview.setBackgroundColor(Some(&color));
+          )
+        } else {
+          objc2_ui_kit::UIColor::systemBackgroundColor()
+        };
+        // setOpaque must come first since the color is applied too late on its own.
+        webview.setOpaque(false);
+        if !is_child {
+          ns_view.setBackgroundColor(Some(&color));
         }
+        webview.setBackgroundColor(Some(&color));
         webview
       };
 
@@ -458,8 +527,9 @@ impl InnerWebView {
               BackgroundThrottlingPolicy::Throttle => WKInactiveSchedulingPolicy::Throttle.0,
             };
 
-            // Convert and set the value
             if let Ok(policy_number) = policy_value.try_into() {
+              // <https://developer.apple.com/documentation/webkit/wkpreferences/inactiveschedulingpolicy>
+              // Available: macOS 14+, iOS 17+
               _preference.setValue_forKey(
                 Some(&NSNumber::numberWithInt(policy_number)),
                 ns_string!("inactiveSchedulingPolicy"),
@@ -482,17 +552,17 @@ impl InnerWebView {
           );
         }
 
-        // allowsBackForwardNavigation
         webview.setAllowsBackForwardNavigationGestures(attributes.back_forward_navigation_gestures);
 
-        // tabFocusesLinks
+        // <https://developer.apple.com/documentation/webkit/wkpreferences/tabfocuseslinks>
+        // Available: macOS 12+
         _preference.setValue_forKey(Some(&_yes), ns_string!("tabFocusesLinks"));
       }
       #[cfg(target_os = "ios")]
       {
-        // set all autoresizingmasks
-        webview.setAutoresizingMask(UIViewAutoresizing::from_bits(31).unwrap());
-        // let () = msg_send![webview, setAutoresizingMask: 31];
+        webview.setAutoresizingMask(
+          UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
+        );
 
         // disable scroll bounce by default
         // https://developer.apple.com/documentation/webkit/wkwebview/1614784-scrollview?language=objc
@@ -508,18 +578,32 @@ impl InnerWebView {
 
       #[cfg(any(debug_assertions, feature = "devtools"))]
       if attributes.devtools {
+        // <https://developer.apple.com/documentation/webkit/wkwebview/isinspectable>
+        // Available: macOS 13.3+, iOS 16.4+
+        // Enables debugging via Safari's Web Inspector, NOT via in-webview devtools.
         let has_inspectable_property: bool =
           NSObject::respondsToSelector(&webview, objc2::sel!(setInspectable:));
         if has_inspectable_property {
           webview.setInspectable(true);
         }
-        // this cannot be on an `else` statement, it does not work on macOS :(
-        let dev = NSString::from_str("developerExtrasEnabled");
-        _preference.setValue_forKey(Some(&_yes), &dev);
+        // NOTE: Private API — `developerExtrasEnabled` is a private KVC key on WKPreferences.
+        // This enables the in-webview devtools
+        _preference.setValue_forKey(Some(&_yes), ns_string!("developerExtrasEnabled"));
+      }
+
+      // See `CONTROLLER_REF_COUNT`.
+      let shares_controller = retain_controller(&manager);
+      #[cfg(feature = "tracing")]
+      if shares_controller {
+        tracing::debug!(
+          "WebView shares its opener's user content controller; skipping its init scripts and IPC handler"
+        );
       }
 
       // Message handler
-      let ipc_handler_delegate = if let Some(ipc_handler) = attributes.ipc_handler {
+      let ipc_handler_delegate = if shares_controller {
+        None
+      } else if let Some(ipc_handler) = attributes.ipc_handler {
         let delegate = WryWebViewDelegate::new(manager.clone(), ipc_handler, mtm);
         Some(delegate)
       } else {
@@ -558,14 +642,18 @@ impl InnerWebView {
         attributes.navigation_handler,
         download_delegate.clone(),
         attributes.on_page_load_handler,
+        pl_attrs.on_web_content_process_terminate_handler,
         mtm,
       );
 
       let proto_navigation_policy_delegate = ProtocolObject::from_ref(&*navigation_policy_delegate);
       webview.setNavigationDelegate(Some(proto_navigation_policy_delegate));
 
-      let ui_delegate: Retained<WryWebViewUIDelegate> =
-        WryWebViewUIDelegate::new(mtm, attributes.new_window_req_handler);
+      let ui_delegate: Retained<WryWebViewUIDelegate> = WryWebViewUIDelegate::new(
+        mtm,
+        attributes.new_window_req_handler,
+        attributes.permission_handler,
+      );
       let proto_ui_delegate = ProtocolObject::from_ref(&*ui_delegate);
       webview.setUIDelegate(Some(proto_ui_delegate));
 
@@ -573,6 +661,8 @@ impl InnerWebView {
       #[cfg(target_os = "macos")]
       {
         let ns_window = ns_view.window().unwrap();
+        // <https://developer.apple.com/documentation/appkit/nswindow/titlebarseparatorstyle>
+        // Available: macOS 11+
         let can_set_titlebar_style =
           ns_window.respondsToSelector(objc2::sel!(setTitlebarSeparatorStyle:));
         if can_set_titlebar_style {
@@ -585,7 +675,7 @@ impl InnerWebView {
         id: webview_id,
         mtm,
         webview: webview.clone(),
-        manager: manager.clone(),
+        manager,
         ns_view: ns_view.retain(),
         data_store,
         pending_scripts,
@@ -599,15 +689,17 @@ impl InnerWebView {
         parent_view: None,
       };
 
-      // Initialize scripts
-      w.init(
-r#"Object.defineProperty(window, 'ipc', {
-  value: Object.freeze({postMessage: function(s) {window.webkit.messageHandlers.ipc.postMessage(s);}})
-});"#,
-      true
-      );
-      for init_script in attributes.initialization_scripts {
-        w.init(&init_script.script, init_script.for_main_frame_only);
+      if w.ipc_handler_delegate.is_some() {
+        // Initialize scripts
+        w.init(
+          r#"Object.defineProperty(window, 'ipc', { value: Object.freeze({ postMessage: function(s) { window.webkit.messageHandlers.ipc.postMessage(s) } }) });"#,
+          true,
+        );
+      }
+      if !shares_controller {
+        for init_script in attributes.initialization_scripts {
+          w.init(&init_script.script, init_script.for_main_frame_only);
+        }
       }
 
       // Set user agent
@@ -644,23 +736,29 @@ r#"Object.defineProperty(window, 'ipc', {
             NSAutoresizingMaskOptions::ViewHeightSizable
               | NSAutoresizingMaskOptions::ViewWidthSizable,
           );
-          parent_view.addSubview(&webview.clone());
+          parent_view.addSubview(&webview);
 
           // Tell the webview receive keyboard events in the window.
           // See https://github.com/tauri-apps/wry/issues/739
           ns_window.setContentView(Some(&parent_view));
-          ns_window.makeFirstResponder(Some(&webview));
+          if attributes.visible && attributes.focused {
+            ns_window.makeFirstResponder(Some(&webview));
+          }
 
           w.parent_view = Some(parent_view);
         }
 
-        // make sure the window is always on top when we create a new webview
-        let app = NSApplication::sharedApplication(mtm);
-        if os_major_version >= 14 {
-          NSApplication::activate(&app);
-        } else {
-          #[allow(deprecated)]
-          NSApplication::activateIgnoringOtherApps(&app, true);
+        // Hidden or unfocused webviews must not activate their containing application.
+        if attributes.visible && attributes.focused {
+          let app = NSApplication::sharedApplication(mtm);
+          if os_major_version >= 14 {
+            // <https://developer.apple.com/documentation/appkit/nsapplication/activate()>
+            // Available: macOS 14+
+            NSApplication::activate(&app);
+          } else {
+            #[allow(deprecated)]
+            NSApplication::activateIgnoringOtherApps(&app, true);
+          }
         }
       }
 
@@ -673,7 +771,7 @@ r#"Object.defineProperty(window, 'ipc', {
     }
   }
 
-  pub fn id(&self) -> crate::WebViewId {
+  pub fn id(&self) -> crate::WebViewId<'_> {
     &self.id
   }
 
@@ -695,6 +793,12 @@ r#"Object.defineProperty(window, 'ipc', {
           let handler = block2::RcBlock::new(move |val: *mut AnyObject, _err: *mut NSError| {
             #[cfg(feature = "tracing")]
             span.lock().unwrap().take();
+
+            #[cfg(feature = "tracing")]
+            if !_err.is_null() {
+              let description = (*_err).localizedDescription().to_string();
+              tracing::debug!("Exception during script eval: {description}");
+            }
 
             let mut result = String::new();
 
@@ -723,6 +827,11 @@ r#"Object.defineProperty(window, 'ipc', {
           let handler = Some(block2::RcBlock::new(
             move |_val: *mut AnyObject, _err: *mut NSError| {
               span.lock().unwrap().take();
+              #[cfg(feature = "tracing")]
+              if !_err.is_null() {
+                let description = (*_err).localizedDescription().to_string();
+                tracing::debug!("Exception during script eval: {description}");
+              }
             },
           ));
           #[cfg(not(feature = "tracing"))]
@@ -770,6 +879,24 @@ r#"Object.defineProperty(window, 'ipc', {
     // Safety: objc runtime calls are unsafe
     unsafe { self.webview.reload() };
     Ok(())
+  }
+
+  pub fn go_forward(&self) -> Result<()> {
+    unsafe { self.webview.goForward() };
+    Ok(())
+  }
+
+  pub fn go_back(&self) -> Result<()> {
+    unsafe { self.webview.goBack() };
+    Ok(())
+  }
+
+  pub fn can_go_forward(&self) -> Result<bool> {
+    Ok(unsafe { self.webview.canGoForward() })
+  }
+
+  pub fn can_go_back(&self) -> Result<bool> {
+    Ok(unsafe { self.webview.canGoBack() })
   }
 
   pub fn clear_all_browsing_data(&self) -> Result<()> {
@@ -827,6 +954,8 @@ r#"Object.defineProperty(window, 'ipc', {
     // Safety: objc runtime calls are unsafe
     #[cfg(target_os = "macos")]
     unsafe {
+      // <https://developer.apple.com/documentation/webkit/wkwebview/printoperation(with:)>
+      // Available: macOS 11+
       let can_print = self
         .webview
         .respondsToSelector(objc2::sel!(printOperationWithPrintInfo:));
@@ -894,6 +1023,8 @@ r#"Object.defineProperty(window, 'ipc', {
 
   pub fn zoom(&self, scale_factor: f64) -> crate::Result<()> {
     unsafe {
+      // <https://developer.apple.com/documentation/webkit/wkwebview/pagezoom>
+      // Available: macOS 11+, iOS 14+
       self.webview.setPageZoom(scale_factor);
     }
 
@@ -918,6 +1049,32 @@ r#"Object.defineProperty(window, 'ipc', {
       // This has to be monitored as it may clash with isOpaque = true.
       // The webview background color may also applied too late so actually not that useful.
       self.webview.setBackgroundColor(Some(&color));
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe {
+      let (red, green, blue, alpha) = _background_color;
+
+      // Disable the default white background using the same drawsBackground KVC key
+      // as the `transparent` feature. On the webview instance (vs config) for runtime changes.
+      // NOTE: Private API — `drawsBackground` is a private KVC key on WKWebView instance.
+      let no = NSNumber::numberWithBool(false);
+      self
+        .webview
+        .setValue_forKey(Some(&no), ns_string!("drawsBackground"));
+
+      let (os_major_version, _, _) = util::operating_system_version();
+      if os_major_version >= 12 {
+        let color = objc2_app_kit::NSColor::colorWithSRGBRed_green_blue_alpha(
+          red as f64 / 255.0,
+          green as f64 / 255.0,
+          blue as f64 / 255.0,
+          alpha as f64 / 255.0,
+        );
+        // <https://developer.apple.com/documentation/webkit/wkwebview/underpagebackgroundcolor>
+        // Available: macOS 12+, iOS 15+
+        self.webview.setUnderPageBackgroundColor(Some(&color));
+      }
     }
 
     Ok(())
@@ -1007,13 +1164,19 @@ r#"Object.defineProperty(window, 'ipc', {
     let secure = cookie.isSecure();
     cookie_builder = cookie_builder.secure(secure);
 
-    let same_site = cookie.sameSitePolicy();
-    let same_site = match same_site {
-      Some(policy) if &*policy == NSHTTPCookieSameSiteLax => cookie::SameSite::Lax,
-      Some(policy) if &*policy == NSHTTPCookieSameSiteStrict => cookie::SameSite::Strict,
-      _ => cookie::SameSite::None,
-    };
-    cookie_builder = cookie_builder.same_site(same_site);
+    // Using string comparison because of https://github.com/tauri-apps/wry/issues/1616
+    let (major, minor, _) = util::operating_system_version();
+    if major > 10 || (major == 10 && minor >= 15) {
+      // <https://developer.apple.com/documentation/foundation/httpcookie/samesitepolicy>
+      // Available: macOS 10.15+, iOS 13+
+      let same_site = cookie.sameSitePolicy();
+      let same_site = match same_site {
+        Some(policy) if policy.to_string() == "lax" => cookie::SameSite::Lax,
+        Some(policy) if policy.to_string() == "strict" => cookie::SameSite::Strict,
+        _ => cookie::SameSite::None,
+      };
+      cookie_builder = cookie_builder.same_site(same_site);
+    }
 
     let expires = cookie.expiresDate();
     let expires = match expires {
@@ -1047,27 +1210,27 @@ r#"Object.defineProperty(window, 'ipc', {
     let properties: Retained<NSMutableDictionary<NSHTTPCookiePropertyKey, AnyObject>> =
       NSMutableDictionary::from_slices(
         &[
-          NSHTTPCookieName,
-          NSHTTPCookieValue,
-          NSHTTPCookiePath,
-          NSHTTPCookieDomain,
+          unsafe { NSHTTPCookieName },
+          unsafe { NSHTTPCookieValue },
+          unsafe { NSHTTPCookiePath },
+          unsafe { NSHTTPCookieDomain },
         ],
         &[&name, &value, &path, &domain],
       );
 
     if let Some(max_age_) = cookie.max_age() {
       let max_age = NSString::from_str(&max_age_.whole_seconds().to_string());
-      properties.insert(NSHTTPCookieMaximumAge, &*max_age);
-      properties.insert(NSHTTPCookieVersion, nstring_1);
+      properties.insert(unsafe { NSHTTPCookieMaximumAge }, &*max_age);
+      properties.insert(unsafe { NSHTTPCookieVersion }, nstring_1);
     } else if let Some(dt) = cookie.expires_datetime() {
       let expires = NSDate::dateWithTimeIntervalSince1970(dt.unix_timestamp() as f64);
-      properties.insert(NSHTTPCookieExpires, &*expires);
-      properties.insert(NSHTTPCookieVersion, nstring_0);
+      properties.insert(unsafe { NSHTTPCookieExpires }, &*expires);
+      properties.insert(unsafe { NSHTTPCookieVersion }, nstring_0);
     }
 
     if let Some(secure) = cookie.secure() {
       let secure = if secure { nstring_true } else { nstring_false };
-      properties.insert(NSHTTPCookieSecure, secure);
+      properties.insert(unsafe { NSHTTPCookieSecure }, secure);
     }
 
     if let Some(http_only) = cookie.http_only() {
@@ -1082,20 +1245,26 @@ r#"Object.defineProperty(window, 'ipc', {
       properties.insert(ns_string!("HttpOnly"), http_only);
     }
 
+    // Using strings because of https://github.com/tauri-apps/wry/issues/1616
     if let Some(same_site) = cookie.same_site() {
+      let key = ns_string!("SameSite");
+      let lax = ns_string!("lax");
+      let strict = ns_string!("strict");
       match same_site {
         cookie::SameSite::Lax => {
-          properties.insert(NSHTTPCookieSameSitePolicy, NSHTTPCookieSameSiteLax);
+          properties.insert(key, lax);
         }
         cookie::SameSite::Strict => {
-          properties.insert(NSHTTPCookieSameSitePolicy, NSHTTPCookieSameSiteStrict);
+          properties.insert(key, strict);
         }
         cookie::SameSite::None => {}
       };
     }
 
-    NSHTTPCookie::cookieWithProperties(&properties)
-      .expect("failed to create wkwebview cookie, report this as bug to `wry`")
+    unsafe {
+      NSHTTPCookie::cookieWithProperties(&properties)
+        .expect("failed to create wkwebview cookie, report this as bug to `wry`")
+    }
   }
 
   pub fn cookies_for_url(&self, url: &str) -> Result<Vec<cookie::Cookie<'static>>> {
@@ -1126,6 +1295,9 @@ r#"Object.defineProperty(window, 'ipc', {
     let (tx, rx) = std::sync::mpsc::channel();
 
     unsafe {
+      // <https://developer.apple.com/documentation/webkit/wkwebsitedatastore/httpcookiestore>
+      // <https://developer.apple.com/documentation/webkit/wkhttpcookiestore/getallcookies(_:)>
+      // Available: macOS 10.13+, iOS 11+
       self
         .data_store
         .httpCookieStore()
@@ -1150,6 +1322,9 @@ r#"Object.defineProperty(window, 'ipc', {
 
     unsafe {
       let wkwebview_cookie = Self::cookie_into_wkwebview(cookie);
+      // <https://developer.apple.com/documentation/webkit/wkwebsitedatastore/httpcookiestore>
+      // <https://developer.apple.com/documentation/webkit/wkhttpcookiestore/setcookie(_:completionhandler:)>
+      // Available: macOS 10.13+, iOS 11+
       self
         .data_store
         .httpCookieStore()
@@ -1168,6 +1343,9 @@ r#"Object.defineProperty(window, 'ipc', {
 
     unsafe {
       let wkwebview_cookie = Self::cookie_into_wkwebview(cookie);
+      // <https://developer.apple.com/documentation/webkit/wkwebsitedatastore/httpcookiestore>
+      // <https://developer.apple.com/documentation/webkit/wkhttpcookiestore/deletecookie(_:completionhandler:)>
+      // Available: macOS 10.13+, iOS 11+
       self
         .data_store
         .httpCookieStore()
@@ -1221,6 +1399,8 @@ r#"Object.defineProperty(window, 'ipc', {
 
     match MainThreadMarker::new() {
       Some(mtn) => unsafe {
+        // <https://developer.apple.com/documentation/webkit/wkwebsitedatastore/fetchalldatastoreidentifiers(_:)>
+        // Available: macOS 14+, iOS 17+
         WKWebsiteDataStore::fetchAllDataStoreIdentifiers(&block, mtn);
         Ok(())
       },
@@ -1251,14 +1431,25 @@ r#"Object.defineProperty(window, 'ipc', {
     });
 
     unsafe {
+      // <https://developer.apple.com/documentation/webkit/wkwebsitedatastore/remove(foridentifier:completionhandler:)>
+      // Available: macOS 14+, iOS 17+
       WKWebsiteDataStore::removeDataStoreForIdentifier_completionHandler(&identifier, &block, mtm);
     }
   }
 }
 
 pub fn url_from_webview(webview: &WKWebView) -> Result<String> {
-  let url_obj = unsafe { webview.URL().unwrap() };
-  let absolute_url = unsafe { url_obj.absoluteString().unwrap() };
+  // `WKWebView.URL()` is nil when the webview has no active navigation, for
+  // example after a failed initial navigation.
+  let url_obj = unsafe { webview.URL() };
+  let Some(url_obj) = url_obj else {
+    return Err(Error::Io(std::io::Error::other("WKWebView URL is nil")));
+  };
+  let Some(absolute_url) = url_obj.absoluteString() else {
+    return Err(Error::Io(std::io::Error::other(
+      "WKWebView URL absoluteString is nil",
+    )));
+  };
 
   let bytes = {
     let bytes: *const c_char = absolute_url.UTF8String();
@@ -1276,30 +1467,25 @@ pub fn url_from_webview(webview: &WKWebView) -> Result<String> {
 
 pub fn platform_webview_version() -> Result<String> {
   unsafe {
-    let Some(bundle) = NSBundle::bundleWithIdentifier(&NSString::from_str("com.apple.WebKit"))
-    else {
-      return Err(Error::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
+    let Some(bundle) = NSBundle::bundleWithIdentifier(ns_string!("com.apple.WebKit")) else {
+      return Err(Error::Io(std::io::Error::other(
         "failed to locate com.apple.WebKit bundle",
       )));
     };
     let Some(dict) = bundle.infoDictionary() else {
-      return Err(Error::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
+      return Err(Error::Io(std::io::Error::other(
         "failed to get WebKit info dictionary",
       )));
     };
 
-    let Some(webkit_version) = dict.objectForKey(&NSString::from_str("CFBundleVersion")) else {
-      return Err(Error::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
+    let Some(webkit_version) = dict.objectForKey(ns_string!("CFBundleVersion")) else {
+      return Err(Error::Io(std::io::Error::other(
         "failed to get WebKit version",
       )));
     };
 
     let Ok(webkit_version) = webkit_version.downcast::<NSString>() else {
-      return Err(Error::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
+      return Err(Error::Io(std::io::Error::other(
         "failed to parse WebKit version",
       )));
     };
@@ -1312,18 +1498,21 @@ pub fn platform_webview_version() -> Result<String> {
 impl Drop for InnerWebView {
   fn drop(&mut self) {
     WEBVIEW_STATE.write().unwrap().remove(&self.id);
+    let last_webview = release_controller(&self.manager);
 
-    // We need to drop handler closures here
     unsafe {
-      if let Some(ipc_handler) = self.ipc_handler_delegate.take() {
-        let ipc = NSString::from_str(IPC_MESSAGE_HANDLER_NAME);
-        // this will decrease the retain count of the ipc handler and trigger the drop
-        ipc_handler
-          .ivars()
-          .controller
-          .removeScriptMessageHandlerForName(&ipc);
+      // This prevents a segfault on the did_receive hook,
+      // see https://github.com/tauri-apps/wry/pull/700
+      if last_webview {
+        if let Some(ipc_handler) = self.ipc_handler_delegate.take() {
+          let ipc = ns_string!(IPC_MESSAGE_HANDLER_NAME);
+          // this will decrease the retain count of the ipc handler and trigger the drop
+          ipc_handler
+            .ivars()
+            .controller
+            .removeScriptMessageHandlerForName(ipc);
+        }
       }
-
       // Remove webview from window's NSView before dropping.
       self.webview.removeFromSuperview();
       self.webview.retain();
@@ -1381,8 +1570,8 @@ unsafe fn wait_for_blocking_operation<T>(rx: std::sync::mpsc::Receiver<T>) -> Re
     let rl = objc2_foundation::NSRunLoop::mainRunLoop();
     let limit_date = NSDate::dateWithTimeIntervalSinceNow(interval_as_secs);
 
-    let mode = NSString::from_str("NSDefaultRunLoopMode");
+    let mode = ns_string!("NSDefaultRunLoopMode");
 
-    rl.acceptInputForMode_beforeDate(&mode, &limit_date);
+    rl.acceptInputForMode_beforeDate(mode, &limit_date);
   }
 }

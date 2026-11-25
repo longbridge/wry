@@ -11,7 +11,9 @@
 
   void setWebView({{package-unescaped}}.RustWebView);
   java.lang.Class getAppClass(...);
+  int getId();
   java.lang.String getVersion();
+  int startActivity(...);
 }
 
 -keep class {{package-unescaped}}.Ipc {
@@ -26,6 +28,8 @@
   void loadUrlMainThread(...);
   void loadHTMLMainThread(...);
   void evalScript(...);
+  java.lang.String getCookies(java.lang.String);
+  void clearAllBrowsingData();
 }
 
 -keep class {{package-unescaped}}.RustWebChromeClient,{{package-unescaped}}.RustWebViewClient {

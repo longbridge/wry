@@ -6,12 +6,11 @@ use std::{ffi::CStr, panic::AssertUnwindSafe};
 
 use http::Request;
 use objc2::{
-  define_class, msg_send,
+  DeclaredClass, MainThreadOnly, define_class, msg_send,
   rc::Retained,
   runtime::{NSObject, ProtocolObject},
-  DeclaredClass, MainThreadOnly,
 };
-use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSString};
+use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSString, ns_string};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 
 pub const IPC_MESSAGE_HANDLER_NAME: &str = "ipc";
@@ -23,7 +22,6 @@ pub struct WryWebViewDelegateIvars {
 
 define_class!(
   #[unsafe(super(NSObject))]
-  #[name = "WryWebViewDelegate"]
   #[thread_kind = MainThreadOnly]
   #[ivars = WryWebViewDelegateIvars]
   pub struct WryWebViewDelegate;
@@ -94,10 +92,10 @@ impl WryWebViewDelegate {
     unsafe {
       // this will increase the retain count of the delegate
       let _res = objc2::exception::catch(AssertUnwindSafe(|| {
-        delegate.ivars().controller.addScriptMessageHandler_name(
-          proto_delegate,
-          &NSString::from_str(IPC_MESSAGE_HANDLER_NAME),
-        );
+        delegate
+          .ivars()
+          .controller
+          .addScriptMessageHandler_name(proto_delegate, ns_string!(IPC_MESSAGE_HANDLER_NAME));
       }));
     }
 

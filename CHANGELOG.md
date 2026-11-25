@@ -1,5 +1,175 @@
 # Changelog
 
+## [0.57.3]
+
+- [`89c4957`](https://github.com/tauri-apps/wry/commit/89c4957799cb98fc803960d2263f01b00fce0aaf) ([#1938](https://github.com/tauri-apps/wry/pull/1938) by [@1eedaegon](https://github.com/tauri-apps/wry/../../1eedaegon)) On Android, fix a panic in `dispatch` when there is no activity, for example after the last one was destroyed. The closure now runs with a null activity and a null webview.
+- [`71531c5`](https://github.com/tauri-apps/wry/commit/71531c55e43c00f48a15574ffab2f8a01a362e17) ([#1936](https://github.com/tauri-apps/wry/pull/1936) by [@wdceng](https://github.com/tauri-apps/wry/../../wdceng)) On Android, add `WryActivity#onWebViewHistoryChanged`, called from `RustWebViewClient#doUpdateVisitedHistory` whenever the webview's history changes (a navigation, a `pushState`, back or forward), so the activity can follow `canGoBack()`, for example to enable its back callback only while the webview can go back.
+- [`8d287db`](https://github.com/tauri-apps/wry/commit/8d287db7fb0d3ab5d36b0d94753c9f55b118137c) ([#1890](https://github.com/tauri-apps/wry/pull/1890) by [@OHNope](https://github.com/tauri-apps/wry/../../OHNope)) On macOS and iOS, download responses sent with `Content-Disposition: attachment` even when WebKit can display their MIME type (PDF, images, text). They were committed as an empty page before, so neither the content nor the download handlers appeared. This matches the Windows and Linux backends.
+- [`55289ad`](https://github.com/tauri-apps/wry/commit/55289ad74ca3bf6205a59411a748960ddf8373ca) ([#1939](https://github.com/tauri-apps/wry/pull/1939) by [@YashwanthKamireddi](https://github.com/tauri-apps/wry/../../YashwanthKamireddi)) On Linux, fix a destroyed webview and its WebKit web process never being freed: the IPC handler now holds the webview weakly instead of strongly, which made a cycle through the webview's own `UserContentManager`.
+- [`4b2f030`](https://github.com/tauri-apps/wry/commit/4b2f0302aaa36fc1e1652892642d4ef2b39c81ee) ([#1933](https://github.com/tauri-apps/wry/pull/1933) by [@nicvlav](https://github.com/tauri-apps/wry/../../nicvlav)) On Windows, register the WebView container's window class under the module that holds its window procedure instead of the executable. When wry is built into a DLL that its host unloads and loads again, such as a plug-in, the class no longer keeps a procedure in unmapped memory, which crashed the host at the next WebView.
+
+## [0.57.2]
+
+- [`790ca0d`](https://github.com/tauri-apps/wry/commit/790ca0df48c12a565d0fd88db4ef79104e6edf23) ([#1846](https://github.com/tauri-apps/wry/pull/1846) by [@bbmediaco](https://github.com/tauri-apps/wry/../../bbmediaco)) On Android, fix a crash when the main pipe receives a webview command message after the activity's destroyed
+- [`eccc972`](https://github.com/tauri-apps/wry/commit/eccc972d3ad5937e1c275ec2ceb2ae5daf1b14ee) ([#1838](https://github.com/tauri-apps/wry/pull/1838) by [@bbmediaco](https://github.com/tauri-apps/wry/../../bbmediaco)) On Android, fix a crash when reading cookies for a URL that has none.
+- [`952c692`](https://github.com/tauri-apps/wry/commit/952c69256c31ea864610cb59f417e80b4a0b9e7d) ([#1909](https://github.com/tauri-apps/wry/pull/1909) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) On Android, fix a memory leak when running `evaluate_script`/`evaluate_script_with_callback`.
+- [`a665cc6`](https://github.com/tauri-apps/wry/commit/a665cc67748d2207ac6b46dbb8a470daae001b09) ([#1907](https://github.com/tauri-apps/wry/pull/1907) by [@renovate](https://github.com/tauri-apps/wry/../../renovate)) Updated dependency `dom_query` to 0.29
+- [`b3dc94a`](https://github.com/tauri-apps/wry/commit/b3dc94a7834bcbf1b3814f0e351d5a1d1758eb09) ([#1913](https://github.com/tauri-apps/wry/pull/1913) by [@LucaCappelletti94](https://github.com/tauri-apps/wry/../../LucaCappelletti94)) On Android, keep `RustWebView.getCookies` and `RustWebView.clearAllBrowsingData` in the ProGuard rules so `WebView::cookies_for_url` and `WebView::clear_all_browsing_data` don't abort minified release builds.
+- [`ba7e1da`](https://github.com/tauri-apps/wry/commit/ba7e1dadfd6fccb3e19669a3c44c276d7bcff9b9) ([#1881](https://github.com/tauri-apps/wry/pull/1881) by [@alecraso](https://github.com/tauri-apps/wry/../../alecraso)) On macOS, cancel a file upload instead of panicking when `NSOpenPanel` can't be created, for example after the app bundle was replaced on disk while the app was running.
+- [`9f351c5`](https://github.com/tauri-apps/wry/commit/9f351c5aec4888533812d63d5a003f3b3400210b) ([#1915](https://github.com/tauri-apps/wry/pull/1915) by [@coldsmirk](https://github.com/tauri-apps/wry/../../coldsmirk)) Fix incorrect coordinates and JavaScript errors for synthetic back/forward mouse events on zoomed pages on macOS and Linux.
+- [`5006b49`](https://github.com/tauri-apps/wry/commit/5006b49b3a643b5544263ff9863b797a810d549b) ([#1914](https://github.com/tauri-apps/wry/pull/1914) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) On Windows, skip dettaching parent subclass when the webview's built with `new_as_child`.
+- [`ec9f76d`](https://github.com/tauri-apps/wry/commit/ec9f76da91f84dfea963731b0715acbc3143a38a) ([#1922](https://github.com/tauri-apps/wry/pull/1922) by [@TheZAbides](https://github.com/tauri-apps/wry/../../TheZAbides)) On Windows, accept files dropped from File Explorer when any path is 260 characters or longer.
+- [`ec9f76d`](https://github.com/tauri-apps/wry/commit/ec9f76da91f84dfea963731b0715acbc3143a38a) ([#1922](https://github.com/tauri-apps/wry/pull/1922) by [@TheZAbides](https://github.com/tauri-apps/wry/../../TheZAbides)) On Windows, prevent a refused drag that follows an accepted drag from emitting `Over` and empty `Drop` events.
+- [`a52412f`](https://github.com/tauri-apps/wry/commit/a52412f8b978c79af5b5948b512ae021154cd7fb) ([#1910](https://github.com/tauri-apps/wry/pull/1910) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) On Windows, fix moving the window blurs and re-focuses the webview.
+- [`e776bbb`](https://github.com/tauri-apps/wry/commit/e776bbb697fe444c6308d4d7f3edd8863ce0489b) ([#1857](https://github.com/tauri-apps/wry/pull/1857) by [@legenddcr](https://github.com/tauri-apps/wry/../../legenddcr)) Fix macOS panics when `WKWebView.URL()` or the navigation request URL is nil: `url_from_webview()` now returns an error instead of unwrapping, and `navigation_policy()` cancels navigations with no URL.
+
+### bug
+
+- [`713aee4`](https://github.com/tauri-apps/wry/commit/713aee46beffba6c49577380cd7cdc52b474f336) ([#1891](https://github.com/tauri-apps/wry/pull/1891) by [@LucaCappelletti94](https://github.com/tauri-apps/wry/../../LucaCappelletti94)) On Android WebViews supporting `WEB_MESSAGE_LISTENER`, take the IPC request URL from the WebView for main-frame messages and from the sender's origin for iframes, so a page's first IPC call no longer arrives as `about:blank`.
+- [`6e1e9cc`](https://github.com/tauri-apps/wry/commit/6e1e9cc106dd02c644f4c6b929049e6819eaec5c) ([#1911](https://github.com/tauri-apps/wry/pull/1911) by [@lyrixx](https://github.com/tauri-apps/wry/../../lyrixx)) On Linux, with the `linux-body` feature, read the whole body of custom protocol requests: a short read no longer ends it, which cut multipart bodies with a file (`<input type="file">` uploads) after their first part.
+
+## [0.57.1]
+
+- [`f9b8bee`](https://github.com/tauri-apps/wry/commit/f9b8bee1de7cfa68d1ee17000c630abeb551b66e) ([#1885](https://github.com/tauri-apps/wry/pull/1885) by [@LucaCappelletti94](https://github.com/tauri-apps/wry/../../LucaCappelletti94)) On Android, read `__wryActivityId` only when the intent or saved state contains it.
+- [`1f86475`](https://github.com/tauri-apps/wry/commit/1f86475c0154aeb14af7ad5710fdc72be4c139be) ([#1895](https://github.com/tauri-apps/wry/pull/1895) by [@Arthurmtro](https://github.com/tauri-apps/wry/../../Arthurmtro)) On Android, run initialization scripts once on URLs that are not intercepted by a custom protocol when the WebView supports `DOCUMENT_START_SCRIPT`, instead of a second time from `onPageStarted`.
+- [`b6bef41`](https://github.com/tauri-apps/wry/commit/b6bef4124469d0525f604961c187123ae8a2e469) ([#1865](https://github.com/tauri-apps/wry/pull/1865) by [@velocitysystems](https://github.com/tauri-apps/wry/../../velocitysystems)) On Android, stop the WebView from applying the `Range` header a second time to a custom protocol `206` response, and serve ranges past 2 GiB.
+- [`d8fe88d`](https://github.com/tauri-apps/wry/commit/d8fe88dc7be2f6ff00c671f823e985335a14f7ad) ([#1847](https://github.com/tauri-apps/wry/pull/1847) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Moved to edition 2024
+- [`75f2b48`](https://github.com/tauri-apps/wry/commit/75f2b480177db9871dad7df69885d182d3328946) ([#1893](https://github.com/tauri-apps/wry/pull/1893) by [@TimeToBuildBob](https://github.com/tauri-apps/wry/../../TimeToBuildBob)) On Linux, isolate download failure state per download so a canceled or failed download does not make later successful downloads report failure.
+- [`9a5f3aa`](https://github.com/tauri-apps/wry/commit/9a5f3aad86d610037f9afc8c22412691f59153da) ([#1868](https://github.com/tauri-apps/wry/pull/1868) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Log `eval` exceptions when `tracing` feature's enabled at `debug` level. (thanks [#1849](https://github.com/tauri-apps/wry/pull/1849) for bring this up)
+- [`66cdfa1`](https://github.com/tauri-apps/wry/commit/66cdfa1d76265cd9a5b1773087d7eec98918adc5) ([#1866](https://github.com/tauri-apps/wry/pull/1866) by [@steipete](https://github.com/tauri-apps/wry/../../steipete)) On macOS, only activate the application and request initial keyboard focus when the new webview is both visible and focused. Creating hidden or unfocused webviews no longer steals focus.
+- [`d93a812`](https://github.com/tauri-apps/wry/commit/d93a81272bd7ea0ae51a972e1b7cdaf045cfbe0a) ([#1844](https://github.com/tauri-apps/wry/pull/1844) by [@cpruijsen](https://github.com/tauri-apps/wry/../../cpruijsen)) On macOS, collect dragged file paths via `NSPasteboard.readObjectsForClasses:options:` instead of the deprecated `NSFilenamesPboardType`, fixing a panic in `drag_drop::collect_paths` when the drag source only publishes per-item `public.file-url` types or file reference URLs that AppKit cannot map to `NSFilenamesPboardType`. The legacy type is kept as a fallback.
+- [`926dd15`](https://github.com/tauri-apps/wry/commit/926dd150b13beff4dc5d2647d577aedf910affb2) ([#1876](https://github.com/tauri-apps/wry/pull/1876) by [@rterence](https://github.com/tauri-apps/wry/../../rterence)) On macOS, a webview built on its opener's configuration (`NewWindowResponse::Create` with `WebViewBuilderExtMacos::with_webview_configuration`) shares the opener's `WKUserContentController`, so it no longer adds its own initialization scripts and IPC handler to it: the opener's scripts and `ipc` handler already serve it. This stops every opened window from growing the opener's script set, and stops dropping the new webview from removing the opener's `ipc` handler.
+
+### bug
+
+- [`78a7056`](https://github.com/tauri-apps/wry/commit/78a705644fd9b59fb47f12a8c8105c48be403332) ([#1883](https://github.com/tauri-apps/wry/pull/1883) by [@LucaCappelletti94](https://github.com/tauri-apps/wry/../../LucaCappelletti94)) On Android, load `with_html` and `load_html` content at `about:blank` so IPC messages reach the handler.
+- [`cab3eac`](https://github.com/tauri-apps/wry/commit/cab3eace983007a16f132c14a34d0a220c707bea) ([#1839](https://github.com/tauri-apps/wry/pull/1839) by [@zackees](https://github.com/tauri-apps/wry/../../zackees)) Only inject the Linux WebKitGTK `window.ipc` bridge when an IPC handler is configured.
+
+## [0.57.0]
+
+- [`105ca17`](https://github.com/tauri-apps/wry/commit/105ca17188a4d590a364c4e9e2d0845eeccc491c) ([#1834](https://github.com/tauri-apps/wry/pull/1834) by [@renovate](https://github.com/tauri-apps/wry/../../renovate)) Updated dependency `dirs` from v6 to v7
+- [`f701e13`](https://github.com/tauri-apps/wry/commit/f701e13af8426f7775737f5283a9c386521d4dbf) ([#1824](https://github.com/tauri-apps/wry/pull/1824) by [@IntellyCode](https://github.com/tauri-apps/wry/../../IntellyCode)) On iOS, follow the system background color when no `background_color` is set, so the webview no longer flashes its opaque white default before the page paints.
+- [`bb69d62`](https://github.com/tauri-apps/wry/commit/bb69d628a905d65042c71a95e85f6921ec9b3264) ([#1809](https://github.com/tauri-apps/wry/pull/1809) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Bumped MSRV to 1.85
+- [`d293751`](https://github.com/tauri-apps/wry/commit/d2937514ee5b01f4b52b6132f895180e90dd0fc7) ([#1816](https://github.com/tauri-apps/wry/pull/1816) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Only inject `window.ipc` if the webview is built with `WebViewBuilder::with_ipc_handler`
+- [`bb69d62`](https://github.com/tauri-apps/wry/commit/bb69d628a905d65042c71a95e85f6921ec9b3264) ([#1809](https://github.com/tauri-apps/wry/pull/1809) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Updated `windows` and `windows-core` to 0.62, `webview2-com` to 0.39, this drops Windows 7 support, see https://github.com/microsoft/windows-rs/issues/3808
+
+## [0.56.1]
+
+- [`62080fa`](https://github.com/tauri-apps/wry/commit/62080fabeb154e7951a1d42d1e77e5146a984a9a) ([#1811](https://github.com/tauri-apps/wry/pull/1811) by [@gimenete](https://github.com/tauri-apps/wry/../../gimenete)) On Android, cache the asset-loader setting in `RustWebViewClient` so intercepted requests avoid repeated JNI calls into Rust state.
+- [`a5612a8`](https://github.com/tauri-apps/wry/commit/a5612a8475ec2c3072b4cc302b6ea1aa01a4f670) ([#1812](https://github.com/tauri-apps/wry/pull/1812) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) On Android, removed unused `withAssetLoader` binding and `assetLoaderDomain` can now return `null`.
+- [`5ce72b0`](https://github.com/tauri-apps/wry/commit/5ce72b0a9b9a8f72111aef10fb4d9242469cfda4) ([#1772](https://github.com/tauri-apps/wry/pull/1772) by [@degant](https://github.com/tauri-apps/wry/../../degant)) Don't panic in the IPC handler when the webview's current document URL is not a valid `http::Uri` (for example a `file://` URL, or one containing a raw space or non-ASCII characters). Such invalid IPC requests are now logged (under the `tracing` feature) and dropped instead of aborting the process, matching the existing behavior of the WKWebView backend.
+- [`b95a7f8`](https://github.com/tauri-apps/wry/commit/b95a7f81cbdaab80b13dff2f79472ea28589f210) ([#1799](https://github.com/tauri-apps/wry/pull/1799) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) On Windows, ignore set webview focus error on create as it fails if the hosting window is minimized.
+- [`aff28ef`](https://github.com/tauri-apps/wry/commit/aff28ef5a48e717e1b14b716e452124663cc4df1) ([#1781](https://github.com/tauri-apps/wry/pull/1781) by [@FabianLars](https://github.com/tauri-apps/wry/../../FabianLars)) On macOS in debug mode, don't register `requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:` delegate method on macOS 11 or older to prevent a debug_assertion startup panic.
+- [`be729e3`](https://github.com/tauri-apps/wry/commit/be729e302c7cd5a504038cabc9aa2610fb36a3d9) ([#1804](https://github.com/tauri-apps/wry/pull/1804) by [@velocitysystems](https://github.com/tauri-apps/wry/../../velocitysystems)) Override `getDefaultVideoPoster()` on Android to return a transparent bitmap instead of null, preventing Chromium from painting its default gray play-button placeholder on `<video>` elements.
+- [`3fbf592`](https://github.com/tauri-apps/wry/commit/3fbf592feab29ffb269778a6f5573746a2f25a4a) ([#1795](https://github.com/tauri-apps/wry/pull/1795) by [@qwerfunch](https://github.com/tauri-apps/wry/../../qwerfunch)) Fix a Windows crash when the WebView2 parent subclass is re-entered after its controller reference data is cleared during teardown.
+
+## \[0.56.0]
+
+- [`affbb3c`](https://github.com/tauri-apps/wry/commit/affbb3cbccc618663737f9b629f2aa21d3890159) ([#1720](https://github.com/tauri-apps/wry/pull/1720)) Updated Android lifecycle JNI calls in `WryActivity` for Tao 0.36's renames:
+
+  > - `create` to `onFirstActivityCreate`
+  > - `onActivityCreate` to `onCreate`
+  > - `start` to `onStart`
+  > - `resume` to `onResume`
+  > - `pause` to `onPause`
+  > - `stop` to `onStop`
+  > - Removed `onActivitySaveInstanceState`
+  > - `onActivityDestroy` to `onDestroy`
+  > - `onActivityLowMemory` to `onLowMemory`
+  >
+  > `onLowMemory` no longer takes any parameters.
+  > `onFirstActivityCreate` no longer takes any parameters.
+
+  and also emitting them as window-specific events.
+- [`145b36f`](https://github.com/tauri-apps/wry/commit/145b36fb5e3551851a9afbdf9c34154e2388f85d) ([#1736](https://github.com/tauri-apps/wry/pull/1736)) Remove Send, Sync bounds from NewWindowOpener.
+- [`871497a`](https://github.com/tauri-apps/wry/commit/871497a726adaa2a29ab4a51b8bff23f23d22182) ([#1748](https://github.com/tauri-apps/wry/pull/1748)) Add back/forward navigation APIs (`go_back`, `go_forward`, `can_go_back`, and `can_go_forward`) to `WebView`.
+- [`fe52ff9`](https://github.com/tauri-apps/wry/commit/fe52ff9374fb4d649eda7d7f6fccb8b047fb49ba) ([#1715](https://github.com/tauri-apps/wry/pull/1715)) On Android, release REQUEST_HANDLER mutex sooner by cloning the underlying Send + Sync handler.
+- [`9d0a9fe`](https://github.com/tauri-apps/wry/commit/9d0a9fe31321797b2fb4dd83e01408df9d7fedcc) ([#1712](https://github.com/tauri-apps/wry/pull/1712)) On Windows, Add `WebViewExtWindows::hwnd` getter to access the child HWND containing the webview.
+- [`4ee8c38`](https://github.com/tauri-apps/wry/commit/4ee8c38651683ca69530a837a830d0e4028a6c44) ([#1779](https://github.com/tauri-apps/wry/pull/1779)) Enable WebView element fullscreen support on macOS 12.3+ and iOS 15.4+ without using private APIs.
+- [`5bdda32`](https://github.com/tauri-apps/wry/commit/5bdda323937c01e497a9735ce83a3636202a8a6a) ([#1719](https://github.com/tauri-apps/wry/pull/1719)) On macOS, avoid an extra copy for owned custom protocol response bodies by transferring the body buffer into `NSData`.
+- [`6ef93b3`](https://github.com/tauri-apps/wry/commit/6ef93b3e99161446d8a829d8c985074c6f5d1c9c) ([#1737](https://github.com/tauri-apps/wry/pull/1737)) On macOS, updated `objc2-*` dependencies to 0.3.2
+- [`9f9a237`](https://github.com/tauri-apps/wry/commit/9f9a237d781ad972442ea7330ecce885de08a445) ([#1654](https://github.com/tauri-apps/wry/pull/1654)) Add an expanded permission handling API for WebView2, WKWebView, WebKitGTK, and Android.
+  This includes:
+
+  - `PermissionKind` expansion: `DisplayCapture`, `Midi`, `Sensors`, `MediaKeySystemAccess`, `LocalFonts`, `WindowManagement`, `PointerLock`, `AutomaticDownloads`, `FileSystemAccess`, `Autoplay`.
+  - Support for `PermissionResponse::Prompt` to trigger native system dialogs.
+  - Android support via JNI bridge (`onPermissionRequest` in `RustWebChromeClient`).
+  - macOS: Split camera/microphone requests; `CameraAndMicrophone` resolved from individual responses.
+  - Linux: `DisplayCapture` detection for WebKitGTK < 2.42 (getDisplayMedia fix).
+  - Windows: Full coverage of all 12 `COREWEBVIEW2_PERMISSION_KIND` values.
+- [`bd1decc`](https://github.com/tauri-apps/wry/commit/bd1decc497517cd5f035a65e75a965c1311dc62a) ([#1780](https://github.com/tauri-apps/wry/pull/1780)) **Breaking Change:** Removed the macOS/iOS specific `transparent` and `fullscreen` feature flags. The functionalities are now always enabled. Please reach out immediatly if you see issues in the App Store submission process.
+- [`d29cd57`](https://github.com/tauri-apps/wry/commit/d29cd576761770debeac351dc6ab96b8300465e3) ([#1787](https://github.com/tauri-apps/wry/pull/1787)) Removed `protocol` feature, previously gated `WebViewBuilder::with_custom_protocol`, `WebViewBuilder::with_asynchronous_custom_protocol` and `WebViewBuilder::with_asset_loader` are now always available
+- [`86ac6e8`](https://github.com/tauri-apps/wry/commit/86ac6e8891be99efa21756d751573bcbaa22554c) ([#1732](https://github.com/tauri-apps/wry/pull/1732)) Updated `dom_query` dependency to 0.28.0
+- [`10fdf73`](https://github.com/tauri-apps/wry/commit/10fdf7308013d40741990c60e960cf82b18d9372) ([#1738](https://github.com/tauri-apps/wry/pull/1738)) On Windows, add `WebViewBuilderExtWindows::with_profile_name` to opt the webview into a named WebView2 profile. Webviews with different profile names within the same environment have isolated cookies, storage, IndexedDB, and cache while sharing the runtime — matching WebView2's documented multi-profile pattern.
+
+## \[0.55.1]
+
+- [`3860359`](https://github.com/tauri-apps/wry/commit/3860359e3dc75260fb9865f7a8eae00a9ec4733d) ([#1721](https://github.com/tauri-apps/wry/pull/1721) by [@lucasfernog](https://github.com/tauri-apps/wry/../../lucasfernog)) Tweak ProGuard rules to keep the getId required activity method.
+
+## \[0.55.0]
+
+- [`a535fd9`](https://github.com/tauri-apps/wry/commit/a535fd95025d126dd1d6ad10b101b81ed9ae40fe) ([#1699](https://github.com/tauri-apps/wry/pull/1699) by [@FabianLars](https://github.com/tauri-apps/wry/../../FabianLars)) On Android, fixed panics on custom protocol timeouts. Increased timeout for non-internal requests to 30 seconds.
+- [`781f371`](https://github.com/tauri-apps/wry/commit/781f371893d58c9dc81f2adce84adfad9e390833) ([#1633](https://github.com/tauri-apps/wry/pull/1633) by [@lucasfernog](https://github.com/tauri-apps/wry/../../lucasfernog)) Update to latest tao to support multi-window on Android and iOS.
+- [`848aff7`](https://github.com/tauri-apps/wry/commit/848aff722a72cc30be01c992734000933f74c2d0) ([#1660](https://github.com/tauri-apps/wry/pull/1660) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Run `new_window_req_handler` on main thread and remove the `Send + Sync` restriction on it
+- [`92114b2`](https://github.com/tauri-apps/wry/commit/92114b2efb531ec8191734817ebcda952e204210) ([#1634](https://github.com/tauri-apps/wry/pull/1634) by [@lucasfernog](https://github.com/tauri-apps/wry/../../lucasfernog)) Call `onNewIntent` for tao's 0.35 Opened event.
+- [`05440b8`](https://github.com/tauri-apps/wry/commit/05440b80ed79a84faa264a91dbcd952d9e77f78f) ([#1688](https://github.com/tauri-apps/wry/pull/1688) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Removed `drag-drop` feature, previously gated `WebViewAttributes::drag_drop_handler` and `WebViewBuilder::with_drag_drop_handler` are now always available
+- [`222c63d`](https://github.com/tauri-apps/wry/commit/222c63d69f03639bbd1f456ae2d9d2f26a2d549c) ([#1698](https://github.com/tauri-apps/wry/pull/1698) by [@FabianLars](https://github.com/tauri-apps/wry/../../FabianLars)) Remove `WebViewAttributes`, `WebView::new` and `WebView::new_as_child` from public API. Use `WebViewBuilder` instead.
+
+## \[0.54.4]
+
+- [`47d9470`](https://github.com/tauri-apps/wry/commit/47d9470e40160af8209da094364141917ec677a7) ([#1693](https://github.com/tauri-apps/wry/pull/1693) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Updated dependency dom_query to 0.27.0, this fixed a bug where initialization scripts were escaped incorrectly on Android
+- [`1540788`](https://github.com/tauri-apps/wry/commit/1540788a0161235e1b89c70912725fd2f18cb813) ([#1692](https://github.com/tauri-apps/wry/pull/1692) by [@Sbenazar](https://github.com/tauri-apps/wry/../../Sbenazar)) fix(webkitgtk): normalize background color values to 0.0–1.0
+
+## \[0.54.3]
+
+- [`40a7032`](https://github.com/tauri-apps/wry/commit/40a703214d3e66942edf6f6a96074580798d5046) ([#1677](https://github.com/tauri-apps/wry/pull/1677) by [@russellmcc](https://github.com/tauri-apps/wry/../../russellmcc)) Fix bug where wry would crash when loaded by multiple dylibs in the same process on macOS.
+
+### Dependencies
+
+- [`146e36e`](https://github.com/tauri-apps/wry/commit/146e36e68b5da3c8e4488a67c8661695e76e60eb) ([#1671](https://github.com/tauri-apps/wry/pull/1671) by [@thomaseizinger](https://github.com/tauri-apps/wry/../../thomaseizinger)) Refactors HTML manipulation on Android to use `dom_query` instead of `kuchikiki`.
+
+### enhance
+
+- [`e430558`](https://github.com/tauri-apps/wry/commit/e430558f4be90096a1bf786cdb59c49a0754beec) ([#1649](https://github.com/tauri-apps/wry/pull/1649) by [@aoxiangtianyu-go](https://github.com/tauri-apps/wry/../../aoxiangtianyu-go)) Add an option to control browser-level autofill behavior on Windows.
+
+### bug
+
+- [`a7de137`](https://github.com/tauri-apps/wry/commit/a7de137ecc321bf3c3a3a10c857b5839741b4b5c) ([#1680](https://github.com/tauri-apps/wry/pull/1680) by [@Legend-Master](https://github.com/tauri-apps/wry/../../Legend-Master)) Fix infinite loop on main thread if creating the webview failed or getting cookie failed
+
+## \[0.54.2]
+
+- [`1d1b870`](https://github.com/tauri-apps/wry/commit/1d1b8707665b4638e040dde7a88cd33d77ba2ebc) ([#1662](https://github.com/tauri-apps/wry/pull/1662) by [@JSKitty](https://github.com/tauri-apps/wry/../../JSKitty)) On macOS, implement `background_color` support for WKWebView behind the `transparent` feature. Disables the default white background via the `drawsBackground` KVC key at init and applies `underPageBackgroundColor` on macOS 12+ for both initial creation and runtime `set_background_color` calls.
+- [`e3761e5`](https://github.com/tauri-apps/wry/commit/e3761e5e5ab684ae277dfa7df931ed9ff4c5bc38) ([#1668](https://github.com/tauri-apps/wry/pull/1668) by [@zeta-gundam](https://github.com/tauri-apps/wry/../../zeta-gundam)) Fixed an issue that caused "Symbol not found: \_NSHTTPCookieSameSite..." panics on macOS `10.13` & `10.14`.
+- [`e3761e5`](https://github.com/tauri-apps/wry/commit/e3761e5e5ab684ae277dfa7df931ed9ff4c5bc38) ([#1668](https://github.com/tauri-apps/wry/pull/1668) by [@zeta-gundam](https://github.com/tauri-apps/wry/../../zeta-gundam)) Fixed an issue that caused "\[\<WKWebViewConfiguration 0x6000003f4d00> setValue:forUndefinedKey:]: this class is not key value coding-compliant for the key drawsBackground." panics on macOS `10.13`
+
+## \[0.54.1]
+
+- [`6704b20`](https://github.com/tauri-apps/wry/commit/6704b207ac985e968be0b5c26b898ca152ae47d9) ([#1655](https://github.com/tauri-apps/wry/pull/1655)) Adds a `PartialEq` derive to `Rect`.
+
+## \[0.54.0]
+
+- [`5fdd1a9`](https://github.com/tauri-apps/wry/commit/5fdd1a9840e24ce77ea4a57ce3746c3dbee28c9c) ([#1625](https://github.com/tauri-apps/wry/pull/1625)) Use OnBackPressedCallback instead of the deprecated onKeyDown for back navigation on Android.
+- [`51d06d0`](https://github.com/tauri-apps/wry/commit/51d06d0cecdf69652a0ae636b1b875e427534bc3) ([#1646](https://github.com/tauri-apps/wry/pull/1646)) Remove redundant clones in WebView and download handling. No user facing changes.
+- [`7b77322`](https://github.com/tauri-apps/wry/commit/7b77322f886c440d035674b8efa586671dc0a3db) ([#1647](https://github.com/tauri-apps/wry/pull/1647)) Fix clippy io_other_error. No user facing changes.
+- [`ff8876d`](https://github.com/tauri-apps/wry/commit/ff8876d92b9681b139d6637220cefe3248b7d3fb) ([#1652](https://github.com/tauri-apps/wry/pull/1652)) Improve wkwebview performance. No user-facing changes.
+- [`27ba73f`](https://github.com/tauri-apps/wry/commit/27ba73f07720b80a21b6b876f1229cad8871aa33) Add handler for web content process termination.
+- [`4fcff14`](https://github.com/tauri-apps/wry/commit/4fcff147b5022af3ee006ed077759b1648b32aa6) ([#1547](https://github.com/tauri-apps/wry/pull/1547)) Set `WebsiteDataManagerBuilder::base_cache_directory` with the same path as `base_data_directory`.
+
+  This change allows the cache directory to be changed instead of using the default one [from WebKitGTK](https://webkitgtk.org/reference/webkit2gtk/stable/property.WebsiteDataManager.base-cache-directory.html).
+- [`64d9296`](https://github.com/tauri-apps/wry/commit/64d92960b960a4b2fdf9205b6188f55650ddd62f) ([#1640](https://github.com/tauri-apps/wry/pull/1640)) Update webkit2gtk-rs crates to `2.0.2`.
+
+## \[0.53.5]
+
+- [#1622](https://github.com/tauri-apps/wry/pull/1626) Fixed an issue that caused docs.rs builds to fail. No user facing changes.
+
+## \[0.53.4]
+
+- [`093856a`](https://github.com/tauri-apps/wry/commit/093856a2a53a6fc1aaa759e048c7e1fe31bb09fa) ([#1622](https://github.com/tauri-apps/wry/pull/1622) by [@lucasfernog](https://github.com/tauri-apps/wry/../../lucasfernog)) Add flag to opt out of automatic back navigation handling on Android via `WryActivity#handleBackNavigation`.
+- [`0f51d67`](https://github.com/tauri-apps/wry/commit/0f51d67485d84fd9c72391379a67567eea3cbbfe) ([#1605](https://github.com/tauri-apps/wry/pull/1605) by [@dgerhardt](https://github.com/tauri-apps/wry/../../dgerhardt)) On Linux, removed a workaround which forced inital requests for multiple webviews to be handled sequentially.
+  The workaround was intended to fix a concurrency bug with loading multiple URIs at the same time on WebKitGTK.
+  But it prevented parallelization and could cause a deadlock in certain situations.
+  It is no longer needed with newer WebKitGTK versions.
+
 ## \[0.53.3]
 
 - [`6aa5854`](https://github.com/tauri-apps/wry/commit/6aa5854b0371a4828638cd722e18d9b1ab235a8b) ([#1609](https://github.com/tauri-apps/wry/pull/1609) by [@lucasfernog](https://github.com/tauri-apps/wry/../../lucasfernog)) Enhance error handling of the `webview_version` function on macOS.

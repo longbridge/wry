@@ -6,7 +6,7 @@
 
 use crate::{Error, RequestAsyncResponder};
 use gtk::glib::{self, MainContext, ObjectExt};
-use http::{header::CONTENT_TYPE, HeaderName, HeaderValue, Request, Response as HttpResponse};
+use http::{HeaderName, HeaderValue, Request, Response as HttpResponse, header::CONTENT_TYPE};
 use soup::{MessageHeaders, MessageHeadersType};
 use std::{
   borrow::Cow,
@@ -34,6 +34,8 @@ impl WebContextImpl {
     let mut context_builder = WebContext::builder();
     if let Some(data_directory) = data_directory {
       let data_manager = WebsiteDataManager::builder()
+        // TODO: Consider taking a cache_directory so this can be in XDG_CACHE_HOME.
+        .base_cache_directory(data_directory.to_string_lossy())
         .base_data_directory(data_directory.to_string_lossy())
         .build();
       if let Some(cookie_manager) = data_manager.cookie_manager() {
@@ -183,15 +185,13 @@ impl WebContextExt for super::WebContext {
               const BUFFER_LEN: usize = 1024;
               let mut result = Vec::new();
               let mut buffer = vec![0; BUFFER_LEN];
+              // A short read is not the end of the stream (a multipart body may
+              // return one part per read): only 0 is.
               while let Ok(count) = s.read(&mut buffer[..], cancellable) {
-                if count == BUFFER_LEN {
-                  result.append(&mut buffer);
-                  buffer.resize(BUFFER_LEN, 0);
-                } else {
-                  buffer.truncate(count);
-                  result.append(&mut buffer);
+                if count == 0 {
                   break;
                 }
+                result.extend_from_slice(&buffer[..count]);
               }
               result
             })
@@ -310,9 +310,10 @@ impl WebContextExt for super::WebContext {
     let context = &self.os.context;
 
     let download_started_handler = Rc::new(RefCell::new(download_started_handler));
-    let failed = Rc::new(RefCell::new(false));
 
     context.connect_download_started(move |_context, download| {
+      // Failure belongs to this download, not every download in the context.
+      let failed = Rc::new(RefCell::new(false));
       let download_started_handler = download_started_handler.clone();
       download.connect_decide_destination(move |download, suggested_filename| {
         if let Some(uri) = download.request().and_then(|req| req.uri()) {
