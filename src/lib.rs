@@ -1548,6 +1548,25 @@ impl<'a> WebViewBuilder<'a> {
     InnerWebView::new(window, self.attrs, self.platform_specific).map(|webview| WebView { webview })
   }
 
+  /// Async version of [`WebViewBuilder::build`].
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **Windows**: Awaits WebView2 environment and controller creation instead of blocking
+  ///   on a nested message pump, so the caller's event loop must keep dispatching messages
+  ///   on this thread until the future resolves.
+  /// - **Other platforms**: Same as [`WebViewBuilder::build`].
+  pub async fn build_async<W: HasWindowHandle>(self, window: &'a W) -> Result<WebView> {
+    self.error?;
+
+    #[cfg(target_os = "windows")]
+    let webview = InnerWebView::new_async(window, self.attrs, self.platform_specific).await?;
+    #[cfg(not(target_os = "windows"))]
+    let webview = InnerWebView::new(window, self.attrs, self.platform_specific)?;
+
+    Ok(WebView { webview })
+  }
+
   /// Consume the builder and create the [`WebView`] as a child window inside the provided [`HasWindowHandle`].
   ///
   /// ## Platform-specific
@@ -1575,6 +1594,26 @@ impl<'a> WebViewBuilder<'a> {
 
     InnerWebView::new_as_child(window, self.attrs, self.platform_specific)
       .map(|webview| WebView { webview })
+  }
+
+  /// Async version of [`WebViewBuilder::build_as_child`].
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **Windows**: Awaits WebView2 environment and controller creation instead of blocking
+  ///   on a nested message pump, so the caller's event loop must keep dispatching messages
+  ///   on this thread until the future resolves.
+  /// - **Other platforms**: Same as [`WebViewBuilder::build_as_child`].
+  pub async fn build_as_child_async<W: HasWindowHandle>(self, window: &'a W) -> Result<WebView> {
+    self.error?;
+
+    #[cfg(target_os = "windows")]
+    let webview =
+      InnerWebView::new_as_child_async(window, self.attrs, self.platform_specific).await?;
+    #[cfg(not(target_os = "windows"))]
+    let webview = InnerWebView::new_as_child(window, self.attrs, self.platform_specific)?;
+
+    Ok(WebView { webview })
   }
 }
 

@@ -113,29 +113,41 @@ impl InnerWebView {
   }
 
   #[inline]
+  pub async fn new_async(
+    window: &impl HasWindowHandle,
+    attributes: WebViewAttributes<'_>,
+    pl_attrs: super::PlatformSpecificWebViewAttributes,
+  ) -> Result<Self> {
+    let window = match window.window_handle()?.as_raw() {
+      RawWindowHandle::Win32(window) => HWND(window.hwnd.get() as _),
+      _ => return Err(Error::UnsupportedWindowHandle),
+    };
+    Self::new_in_hwnd_async(window, attributes, pl_attrs, false).await
+  }
+
+  #[inline]
+  pub async fn new_as_child_async(
+    parent: &impl HasWindowHandle,
+    attributes: WebViewAttributes<'_>,
+    pl_attrs: super::PlatformSpecificWebViewAttributes,
+  ) -> Result<Self> {
+    let parent = match parent.window_handle()?.as_raw() {
+      RawWindowHandle::Win32(parent) => HWND(parent.hwnd.get() as _),
+      _ => return Err(Error::UnsupportedWindowHandle),
+    };
+    Self::new_in_hwnd_async(parent, attributes, pl_attrs, true).await
+  }
+
+  #[inline]
   fn new_in_hwnd(
     parent: HWND,
-    mut attributes: WebViewAttributes,
+    attributes: WebViewAttributes,
     pl_attrs: super::PlatformSpecificWebViewAttributes,
     is_child: bool,
   ) -> Result<Self> {
     let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
 
     let hwnd = Self::create_container_hwnd(parent, &attributes, is_child)?;
-
-    let drop_handler = attributes.drag_drop_handler.take();
-    let bounds = attributes.bounds;
-
-    let id = attributes
-      .id
-      .map(|id| id.to_string())
-      .unwrap_or_else(|| (hwnd.0 as isize).to_string());
-
-    let background_color = if attributes.transparent {
-      Some((0, 0, 0, 0))
-    } else {
-      attributes.background_color
-    };
 
     let env = if let Some(env) = &pl_attrs.environment {
       env.clone()
@@ -146,9 +158,75 @@ impl InnerWebView {
       hwnd,
       &env,
       attributes.incognito,
-      background_color,
+      Self::default_background_color(&attributes),
       pl_attrs.profile_name.as_deref(),
     )?;
+
+    Self::finish_new_in_hwnd(
+      parent, hwnd, attributes, env, controller, pl_attrs, is_child,
+    )
+  }
+
+  /// Same as [`Self::new_in_hwnd`], but awaits the environment and controller creation
+  /// instead of blocking on a nested message pump, so the caller's event loop keeps
+  /// dispatching messages while WebView2 initializes.
+  #[inline]
+  async fn new_in_hwnd_async(
+    parent: HWND,
+    attributes: WebViewAttributes<'_>,
+    pl_attrs: super::PlatformSpecificWebViewAttributes,
+    is_child: bool,
+  ) -> Result<Self> {
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+
+    let hwnd = Self::create_container_hwnd(parent, &attributes, is_child)?;
+
+    let env = if let Some(env) = &pl_attrs.environment {
+      env.clone()
+    } else {
+      Self::create_environment_async(&attributes, pl_attrs.clone()).await?
+    };
+    let controller = Self::create_controller_async(
+      hwnd,
+      &env,
+      attributes.incognito,
+      Self::default_background_color(&attributes),
+      pl_attrs.profile_name.as_deref(),
+    )
+    .await?;
+
+    Self::finish_new_in_hwnd(
+      parent, hwnd, attributes, env, controller, pl_attrs, is_child,
+    )
+  }
+
+  #[inline]
+  fn default_background_color(attributes: &WebViewAttributes) -> Option<(u8, u8, u8, u8)> {
+    if attributes.transparent {
+      Some((0, 0, 0, 0))
+    } else {
+      attributes.background_color
+    }
+  }
+
+  #[inline]
+  fn finish_new_in_hwnd(
+    parent: HWND,
+    hwnd: HWND,
+    mut attributes: WebViewAttributes,
+    env: ICoreWebView2Environment,
+    controller: ICoreWebView2Controller,
+    pl_attrs: super::PlatformSpecificWebViewAttributes,
+    is_child: bool,
+  ) -> Result<Self> {
+    let drop_handler = attributes.drag_drop_handler.take();
+    let bounds = attributes.bounds;
+
+    let id = attributes
+      .id
+      .map(|id| id.to_string())
+      .unwrap_or_else(|| (hwnd.0 as isize).to_string());
+
     let webview = Self::init_webview(
       parent,
       hwnd,
@@ -324,6 +402,34 @@ impl InnerWebView {
     attributes: &WebViewAttributes,
     pl_attrs: super::PlatformSpecificWebViewAttributes,
   ) -> Result<ICoreWebView2Environment> {
+    let (tx, rx) = mpsc::channel();
+    Self::request_environment(attributes, pl_attrs, move |result| {
+      tx.send(result)
+        .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+    })?;
+    webview2_com::wait_with_pump(rx)?
+  }
+
+  #[inline]
+  async fn create_environment_async(
+    attributes: &WebViewAttributes<'_>,
+    pl_attrs: super::PlatformSpecificWebViewAttributes,
+  ) -> Result<ICoreWebView2Environment> {
+    let (tx, rx) = flume::bounded(1);
+    Self::request_environment(attributes, pl_attrs, move |result| {
+      tx.send(result)
+        .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+    })?;
+    recv_completion(rx).await
+  }
+
+  /// Starts creating the environment; `respond` receives the result on completion.
+  #[inline]
+  fn request_environment(
+    attributes: &WebViewAttributes,
+    pl_attrs: super::PlatformSpecificWebViewAttributes,
+    respond: impl FnOnce(Result<ICoreWebView2Environment>) -> windows::core::Result<()> + 'static,
+  ) -> Result<()> {
     let data_directory = attributes
       .context
       .as_deref()
@@ -361,7 +467,6 @@ impl InnerWebView {
       arguments
     });
 
-    let (tx, rx) = mpsc::channel();
     let options = CoreWebView2EnvironmentOptions::default();
     unsafe {
       options.set_additional_browser_arguments(additional_browser_args);
@@ -393,14 +498,13 @@ impl InnerWebView {
               error_code?;
               environment.ok_or_else(|| windows::core::Error::from(E_POINTER).into())
             })();
-            tx.send(result)
-              .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+            respond(result)
           },
         )),
       )?;
     }
 
-    webview2_com::wait_with_pump(rx)?
+    Ok(())
   }
 
   #[inline]
@@ -412,7 +516,53 @@ impl InnerWebView {
     profile_name: Option<&str>,
   ) -> Result<ICoreWebView2Controller> {
     let (tx, rx) = mpsc::channel();
+    Self::request_controller(
+      hwnd,
+      env,
+      incognito,
+      background_color,
+      profile_name,
+      move |result| {
+        tx.send(result)
+          .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+      },
+    )?;
+    webview2_com::wait_with_pump(rx)?
+  }
 
+  #[inline]
+  async fn create_controller_async(
+    hwnd: HWND,
+    env: &ICoreWebView2Environment,
+    incognito: bool,
+    background_color: Option<(u8, u8, u8, u8)>,
+    profile_name: Option<&str>,
+  ) -> Result<ICoreWebView2Controller> {
+    let (tx, rx) = flume::bounded(1);
+    Self::request_controller(
+      hwnd,
+      env,
+      incognito,
+      background_color,
+      profile_name,
+      move |result| {
+        tx.send(result)
+          .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+      },
+    )?;
+    recv_completion(rx).await
+  }
+
+  /// Starts creating the controller; `respond` receives the result on completion.
+  #[inline]
+  fn request_controller(
+    hwnd: HWND,
+    env: &ICoreWebView2Environment,
+    incognito: bool,
+    background_color: Option<(u8, u8, u8, u8)>,
+    profile_name: Option<&str>,
+    respond: impl FnOnce(Result<ICoreWebView2Controller>) -> windows::core::Result<()> + 'static,
+  ) -> Result<()> {
     // we don't use CreateCoreWebView2ControllerCompletedHandler::wait_for_async
     // as it uses an mspc::channel under the hood, so we can avoid using two channels
     // by manually creating the callback handler and use webview2_com::with_with_bump
@@ -422,8 +572,7 @@ impl InnerWebView {
           error_code?;
           controller.ok_or_else(|| windows::core::Error::from(E_POINTER).into())
         })();
-        tx.send(result)
-          .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+        respond(result)
       },
     ));
 
@@ -458,7 +607,7 @@ impl InnerWebView {
       }
     }
 
-    webview2_com::wait_with_pump(rx)?
+    Ok(())
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -2051,6 +2200,14 @@ pub fn platform_webview_version() -> Result<String> {
 }
 
 #[inline]
+/// Awaits a WebView2 completion handler result without pumping messages, leaving
+/// message dispatch to the caller's event loop.
+async fn recv_completion<T>(rx: flume::Receiver<Result<T>>) -> Result<T> {
+  rx.recv_async()
+    .await
+    .map_err(|_| Error::WebView2Error(webview2_com::Error::TaskCanceled))?
+}
+
 fn is_windows_7() -> bool {
   let v = windows_version::OsVersion::current();
   // windows 7 is 6.1
